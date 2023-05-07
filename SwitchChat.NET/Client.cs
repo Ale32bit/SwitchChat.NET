@@ -41,7 +41,7 @@ public class Client
     public string Owner { get; private set; }
 
 
-    private ClientWebSocket _wsClient = new();
+    private ClientWebSocket? _wsClient;
 
     private readonly string? _token;
     private readonly Uri _endpoint;
@@ -54,6 +54,7 @@ public class Client
     private readonly System.Timers.Timer _queueTimer;
     private readonly TimeSpan _queueDelay = TimeSpan.FromMilliseconds(500);
     private readonly Dictionary<int, TaskCompletionSource<bool>> _messageTcs = new();
+    private readonly TimeSpan _restartDelay = TimeSpan.FromSeconds(60);
 
     public Client(string? token = null, Uri? endpoint = default)
     {
@@ -71,6 +72,16 @@ public class Client
         OnAfk += (_, e) => UpdatePlayer(e.User);
         OnAfkReturn += (_, e) => UpdatePlayer(e.User);
         OnRaw += ProcessData;
+    }
+
+    public void EmitOnRaw(DataEvent ev)
+    {
+        OnRaw?.Invoke(this, ev);
+    }
+
+    public void Kill()
+    {
+        _wsClient.CloseAsync(WebSocketCloseStatus.NormalClosure, null, default);
     }
 
     public Task<bool> SayAsync(string text, string? name = null, FormattingMode? mode = null, CancellationToken cancellationToken = default)
@@ -122,22 +133,65 @@ public class Client
         return message.Tcs.Task;
     }
 
-    public async Task RunAsync(CancellationToken cancellationToken = default)
+    public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
+        if (_wsClient != null)
+        {
+            if(_wsClient.State != WebSocketState.Closed)
+                await _wsClient.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancellationToken);
+            _wsClient.Dispose();
+        }
+
+        _wsClient = new();
+
+        Console.WriteLine("CONNECT ASYNC");
+
         var uri = new Uri(_endpoint, _token);
         await _wsClient.ConnectAsync(uri, cancellationToken);
         if (_wsClient.State != WebSocketState.Open)
         {
             throw new Exception(_wsClient.CloseStatusDescription);
         }
-
-        await ListenAsync(cancellationToken);
     }
 
-    public async Task CloseAsync(CancellationToken cancellationToken = default)
+    public async Task RunAsync(CancellationToken cancellationToken = default)
     {
+        if (_wsClient == null || _wsClient.State != WebSocketState.Open)
+            await ConnectAsync(cancellationToken);
+
+        Console.WriteLine("Connected for first time");
+
+        while (true)
+        {
+            Console.WriteLine("Listening");
+            await ListenAsync(cancellationToken);
+            Console.WriteLine("Stopped listening");
+            Console.WriteLine(Running);
+            if (Running)
+                await ReconnectAsync(true, cancellationToken);
+            else
+                break;
+        }
+    }
+
+    public async Task CloseAsync(bool soft = false, CancellationToken cancellationToken = default)
+    {
+        if (!soft)
+            Running = false;
+
         _queueTimer.Stop();
         await _wsClient.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancellationToken);
+        _wsClient.Dispose();
+    }
+
+    public async Task ReconnectAsync(bool wait = false, CancellationToken cancellationToken = default)
+    {
+        await CloseAsync(wait, cancellationToken);
+
+        if (wait)
+            await Task.Delay(_restartDelay, cancellationToken);
+
+        await ConnectAsync(cancellationToken);
     }
 
     private void UpdatePlayer(User player)
@@ -159,7 +213,7 @@ public class Client
             var result = await _wsClient.ReceiveAsync(buffer, cancellationToken);
             if (result.MessageType == WebSocketMessageType.Close)
             {
-                await CloseAsync(cancellationToken);
+                await CloseAsync(false, cancellationToken);
                 return;
             }
 
@@ -199,11 +253,6 @@ public class Client
 
             case "event":
                 var eventData = Parse<BaseEvent>(e.Payload);
-
-                //if (event.type === "server_restart_scheduled") {
-                //  const restart = event as ServerRestartScheduled;
-                //  restart.restartAt = new Date(restart.restartAt);
-                //}
 
                 ProcessEvent(eventData.Event, e.Payload);
                 break;
