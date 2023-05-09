@@ -51,8 +51,9 @@ public class Client
 
     private Queue<QueueMessage> _messages = new();
     private int _queueCounter = 0;
-    private readonly System.Timers.Timer _queueTimer;
     private readonly TimeSpan _queueDelay = TimeSpan.FromMilliseconds(500);
+    private bool _processingQueue = false;
+
     private readonly Dictionary<int, TaskCompletionSource<bool>> _messageTcs = new();
     private readonly TimeSpan _restartDelay = TimeSpan.FromSeconds(60);
 
@@ -60,14 +61,6 @@ public class Client
     {
         _token = token;
         _endpoint = endpoint ?? ServerEndpoint;
-
-        _queueTimer = new(_queueDelay)
-        {
-            AutoReset = true,
-            Enabled = false,
-        };
-
-        _queueTimer.Elapsed += ProcessQueue;
 
         OnAfk += (_, e) => UpdatePlayer(e.User);
         OnAfkReturn += (_, e) => UpdatePlayer(e.User);
@@ -103,6 +96,7 @@ public class Client
         };
 
         _messages.Enqueue(message);
+        ProcessQueue();
 
         return message.Tcs.Task;
     }
@@ -129,6 +123,7 @@ public class Client
         };
 
         _messages.Enqueue(message);
+        ProcessQueue();
 
         return message.Tcs.Task;
     }
@@ -144,8 +139,6 @@ public class Client
 
         _wsClient = new();
 
-        Console.WriteLine("CONNECT ASYNC");
-
         var uri = new Uri(_endpoint, _token);
         await _wsClient.ConnectAsync(uri, cancellationToken);
         if (_wsClient.State != WebSocketState.Open)
@@ -159,14 +152,9 @@ public class Client
         if (_wsClient == null || _wsClient.State != WebSocketState.Open)
             await ConnectAsync(cancellationToken);
 
-        Console.WriteLine("Connected for first time");
-
         while (true)
         {
-            Console.WriteLine("Listening");
             await ListenAsync(cancellationToken);
-            Console.WriteLine("Stopped listening");
-            Console.WriteLine(Running);
             if (Running)
                 await ReconnectAsync(true, cancellationToken);
             else
@@ -179,7 +167,7 @@ public class Client
         if (!soft)
             Running = false;
 
-        _queueTimer.Stop();
+        _processingQueue = false;
         await _wsClient.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancellationToken);
         _wsClient.Dispose();
     }
@@ -241,7 +229,6 @@ public class Client
                 _capabilities = hello.Capabilities.Select(c => Enum.Parse<Capability>(c, true)).ToArray();
 
                 Running = true;
-                _queueTimer.Start();
                 OnReady?.Invoke(this, EventArgs.Empty);
                 break;
 
@@ -370,15 +357,21 @@ public class Client
         }
     }
 
-    private void ProcessQueue(object? sender, ElapsedEventArgs e)
+    private async Task ProcessQueue()
     {
-        if (_messages.TryDequeue(out var message))
+        if (_processingQueue)
+            return;
+
+        _processingQueue = true;
+        while(_processingQueue && _messages.TryDequeue(out var message))
         {
             var request = JsonSerializer.Serialize(message.Request, JsonSerializerOptions);
             var payload = Encoding.UTF8.GetBytes(request);
             _messageTcs[message.Request.Id] = message.Tcs;
-            _wsClient.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None);
+            await _wsClient.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None);
+            await Task.Delay(_queueDelay);
         }
+        _processingQueue = false;
     }
 
     private static JsonSerializerOptions JsonSerializerOptions = new(JsonSerializerDefaults.Web)
