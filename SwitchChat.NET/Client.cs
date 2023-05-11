@@ -24,6 +24,7 @@ public class Client
     public event EventHandler<IngameChatMessage> OnIngameChatMessage;
     public event EventHandler<Join> OnJoin;
     public event EventHandler<Leave> OnLeave;
+    public event EventHandler<WorldChange> OnWorldChange;
     public event EventHandler<ServerRestartScheduled> OnServerRestartScheduled;
     public event EventHandler<ServerRestartCancelled> OnServerRestartCancelled;
     public event EventHandler<DataEvent> OnRaw;
@@ -67,16 +68,14 @@ public class Client
         OnRaw += ProcessData;
     }
 
-    public void EmitOnRaw(DataEvent ev)
-    {
-        OnRaw?.Invoke(this, ev);
-    }
-
-    public void Kill()
-    {
-        _wsClient.CloseAsync(WebSocketCloseStatus.NormalClosure, null, default);
-    }
-
+    /// <summary>
+    /// Say something in the in-game chat
+    /// </summary>
+    /// <param name="text"></param>
+    /// <param name="name"></param>
+    /// <param name="mode"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns>Whether is succeeded</returns>
     public Task<bool> SayAsync(string text, string? name = null, FormattingMode? mode = null, CancellationToken cancellationToken = default)
     {
         name ??= DefaultName;
@@ -101,6 +100,15 @@ public class Client
         return message.Tcs.Task;
     }
 
+    /// <summary>
+    /// Tell something to a player in the in-game chat.
+    /// </summary>
+    /// <param name="user">User's name or UUID</param>
+    /// <param name="text"></param>
+    /// <param name="name"></param>
+    /// <param name="mode"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns>Whether it succeeded. Will return false if the player is not found.</returns>
     public Task<bool> TellAsync(string user, string text, string? name = null, FormattingMode? mode = null, CancellationToken cancellationToken = default)
     {
         name ??= DefaultName;
@@ -128,6 +136,12 @@ public class Client
         return message.Tcs.Task;
     }
 
+    /// <summary>
+    /// Connect to the Chatbox WebSocket server
+    /// </summary>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    /// <exception cref="Exception"></exception>
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
         if (_wsClient != null)
@@ -147,6 +161,11 @@ public class Client
         }
     }
 
+    /// <summary>
+    /// Start the listening loop
+    /// </summary>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         if (_wsClient == null || _wsClient.State != WebSocketState.Open)
@@ -162,6 +181,12 @@ public class Client
         }
     }
 
+    /// <summary>
+    /// Close connection to the server
+    /// </summary>
+    /// <param name="soft"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task CloseAsync(bool soft = false, CancellationToken cancellationToken = default)
     {
         if (!soft)
@@ -172,6 +197,12 @@ public class Client
         _wsClient.Dispose();
     }
 
+    /// <summary>
+    /// Restart connections
+    /// </summary>
+    /// <param name="wait">Wait before starting</param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task ReconnectAsync(bool wait = false, CancellationToken cancellationToken = default)
     {
         await CloseAsync(wait, cancellationToken);
@@ -343,6 +374,11 @@ public class Client
             case "afk_return":
                 var arev = Parse<AFKReturn>(payload);
                 OnAfkReturn?.Invoke(this, arev);
+                break;
+
+            case "world_change":
+                var wcev = Parse<WorldChange>(payload);
+                OnWorldChange?.Invoke(this, wcev);
                 break;
 
             case "server_restart_scheduled":
