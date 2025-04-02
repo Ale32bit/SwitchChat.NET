@@ -13,5 +13,8 @@ public enum FormattingMode
     Format,
 
     [EnumMember(Value = "markdown")]
-    Markdown
+    Markdown,
+    
+    [EnumMember(Value = "minimessage")]
+    MiniMessage,
 }
